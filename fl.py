@@ -52,9 +52,12 @@ client_data_x = [x[random_assignments == i] for i in range(CLIENTS)]
 client_data_y = [y[random_assignments == i] for i in range(CLIENTS)]
 # split data into train and test sets for each client
 client_data_x_train = [client_data_x[i][:int(len(client_data_x[i]) * 0.8)] for i in range(CLIENTS)]
-client_data_x_test = [client_data_x[i][int(len(client_data_x[i]) * 0.8):] for i in range(CLIENTS)]
+client_data_x_validation = [client_data_x[i][int(len(client_data_x[i]) * 0.8):int(len(client_data_x[i]) * 0.9)] for i in range(CLIENTS)]
+client_data_x_test = [client_data_x[i][int(len(client_data_x[i]) * 0.9):] for i in range(CLIENTS)]
+
 client_data_y_train = [client_data_y[i][:int(len(client_data_y[i]) * 0.8)] for i in range(CLIENTS)]
-client_data_y_test = [client_data_y[i][int(len(client_data_y[i]) * 0.8):] for i in range(CLIENTS)]
+client_data_y_validation = [client_data_y[i][int(len(client_data_y[i]) * 0.8):int(len(client_data_y[i]) * 0.9)] for i in range(CLIENTS)]
+client_data_y_test = [client_data_y[i][int(len(client_data_y[i]) * 0.9):] for i in range(CLIENTS)]
 
 client_models = [MLPClassifier(hidden_layer_sizes=(10,), max_iter=ITERS_PER_CLIENT, warm_start=True) for _ in range(CLIENTS)]
 
@@ -65,14 +68,19 @@ auroc_history = []
 for epoch in range(1000):
     for i in range(CLIENTS):
         isolated_models[i].fit(client_data_x_train[i], client_data_y_train[i])
-        preds = isolated_models[i].predict(client_data_x_test[i])  # This line is just to trigger the warm start
-        isolated_aurocs.append(roc_auc_score(client_data_y_test[i], preds))
+        preds = isolated_models[i].predict(client_data_x_validation[i])
+        isolated_aurocs.append(roc_auc_score(client_data_y_validation[i], preds))
     mean_aurocs = np.mean(isolated_aurocs)
     auroc_history.append(mean_aurocs)
     print(f"Epoch {epoch + 1}, Isolated Client AUROCs: {mean_aurocs:.4f}")
     if epoch > 0 and abs(auroc_history[-1] - auroc_history[-2]) < 0.0001:
         print("Convergence reached, stopping training.")
         break
+isolated_aurocs = []
+# evaluate isolated models on test data
+for i in range(CLIENTS):
+    preds = isolated_models[i].predict(client_data_x_test[i])
+    isolated_aurocs.append(roc_auc_score(client_data_y_test[i], preds))
 
 # Simulate global pooled training
 pooled_aurocs = []
@@ -82,16 +90,22 @@ train_data_x = np.concatenate(client_data_x_train)
 train_data_y = np.concatenate(client_data_y_train)
 test_data_x = np.concatenate(client_data_x_test)
 test_data_y = np.concatenate(client_data_y_test)
+validation_data_x = np.concatenate(client_data_x_validation)
+validation_data_y = np.concatenate(client_data_y_validation)
 for epoch in range(1000):
     pooled_model.fit(train_data_x, train_data_y)
-    preds = pooled_model.predict(test_data_x)  # This line is just to trigger the warm start
-    pooled_aurocs.append(roc_auc_score(test_data_y, preds))
+    preds = pooled_model.predict(validation_data_x)  # This line is just to trigger the warm start
+    pooled_aurocs.append(roc_auc_score(validation_data_y, preds))
     mean_aurocs = np.mean(pooled_aurocs)
     auroc_history.append(mean_aurocs)
     print(f"Epoch {epoch + 1}, Single Global AUROCs: {mean_aurocs:.4f}")
     if epoch > 0 and abs(auroc_history[-1] - auroc_history[-2]) < 0.0001:
         print("Convergence reached, stopping training.")
         break
+pooled_aurocs = []
+# evaluate pooled model on test data
+pooled_preds = pooled_model.predict(test_data_x)
+pooled_aurocs.append(roc_auc_score(test_data_y, pooled_preds))
 
 # Federated Learning Simulation
 auroc_history = []
@@ -100,8 +114,8 @@ for epoch in range(EPOCHS):
     for i in range(CLIENTS):
         client_models[i].fit(client_data_x_train[i], client_data_y_train[i])
 
-        preds = client_models[i].predict(client_data_x_test[i])  # This line is just to trigger the warm start
-        client_aurocs.append(roc_auc_score(client_data_y_test[i], preds))
+        preds = client_models[i].predict(client_data_x_validation[i])  # This line is just to trigger the warm start
+        client_aurocs.append(roc_auc_score(client_data_y_validation[i], preds))
 
     # Aggregate model parameters
     for layer in range(len(client_models[0].coefs_)):
@@ -117,18 +131,24 @@ for epoch in range(EPOCHS):
     if epoch > 0 and abs(auroc_history[-1] - auroc_history[-2]) < 0.0001:
         print("Convergence reached, stopping training.")
         break
+# Evaluate federated models on test data
+federated_aurocs = []
+for i in range(CLIENTS):
+    preds = client_models[i].predict(client_data_x_test[i])
+    federated_aurocs.append(roc_auc_score(client_data_y_test[i], preds))
 
 # Plotting the results
 fig = go.Figure()
+fl_auroc_mean = np.mean(federated_aurocs)
 fig.add_trace(go.Scatter(
     x=list(range(1, len(auroc_history) + 1)),
-    y=auroc_history,
-    mode='lines+markers',
-    name='Federated Learning AUROC',
+    y=[fl_auroc_mean] * len(auroc_history),
+    mode='lines',
+    name='Federated AUROC',
     line=dict(color='blue', width=2)
 ))
 # Add isolated AUROC for comparison
-isolated_aurocs_mean = isolated_aurocs[-1]
+isolated_aurocs_mean = np.mean(isolated_aurocs)
 fig.add_trace(go.Scatter(
     x=list(range(1, len(auroc_history) + 1)),
     y=[isolated_aurocs_mean] * len(auroc_history),
@@ -149,7 +169,9 @@ fig.update_layout(
     title='Federated Learning AUROC Over Epochs',
     xaxis_title='Epochs',
     yaxis_title='AUROC',
-    template='plotly_white'
+    template='plotly_white',
+    yaxis=dict(range=[0, 1]),
+    height=600,
 )
 st.plotly_chart(fig, use_container_width=True)
 
